@@ -506,9 +506,11 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
                                 protocol='JsonPost'
                                 encoding='UTF-8'
                                >
-                            <parameter name='param1' type='System.String' layout='${{message}}'/> 
-                            <parameter name='param2' type='System.String' layout='${{level}}'/>
-     
+                            <header name='Authorization' layout='OpenBackDoor' />
+                            <parameter name='param1' ParameterType='System.String' layout='${{message}}'/> 
+                            <parameter name='param2' ParameterType='System.String' layout='${{level}}'/>
+                            <parameter name='param3' ParameterType='System.Boolean' layout='True'/>
+                            <parameter name='param4' ParameterType='System.DateTime' layout='${{date:universalTime=true:format=o}}'/>
                         </target>
                     </targets>
                     <rules>
@@ -522,9 +524,9 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
             LogManager.Configuration = configuration;
             var logger = LogManager.GetCurrentClassLogger();
 
-            var txt = "message 1 with a JSON POST";
+            var txt = "message 1 with a JSON POST<hello><again\\>\"\b";   // Lets tease the JSON serializer and see it can handle valid and invalid xml chars
             var count = 101;
-            var context = new LogDocController.TestContext(1, count, false, txt, "info");
+            var context = new LogDocController.TestContext(1, count, false, new Dictionary<string, string>() { { "Authorization", "OpenBackDoor" } }, txt, "info", true, DateTime.UtcNow);
 
             StartOwinDocTest(context, () =>
             {
@@ -552,9 +554,10 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
                                 XmlRoot='ComplexType'
                                 encoding='UTF-8'
                                >
-                            <parameter name='param1' type='System.String' layout='${{message}}'/> 
-                            <parameter name='param2' type='System.String' layout='${{level}}'/>
-     
+                            <parameter name='param1' ParameterType='System.String' layout='${{message}}'/> 
+                            <parameter name='param2' ParameterType='System.String' layout='${{level}}'/>
+                            <parameter name='param3' ParameterType='System.Boolean' layout='True'/>
+                            <parameter name='param4' ParameterType='System.DateTime' layout='${{date:universalTime=true:format=o}}'/>
                         </target>
                     </targets>
                     <rules>
@@ -568,14 +571,14 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
             LogManager.Configuration = configuration;
             var logger = LogManager.GetCurrentClassLogger();
 
-            var txt = "message 1 with a XML POST";
+            var txt = "message 1 with a XML POST<hello><again\\>\"";   // Lets tease the Xml-Serializer, and see it can handle xml-tags
             var count = 101;
-            var context = new LogDocController.TestContext(1, count, true, txt, "info");
+            var context = new LogDocController.TestContext(1, count, true, null, txt, "info", true, DateTime.UtcNow);
 
             StartOwinDocTest(context, () =>
             {
                 for (int i = 0; i < count; i++)
-                    logger.Info(txt);
+                    logger.Info(txt + "\b");    // Lets tease the Xml-Serializer, and see it can remove invalid chars
             });
 
             Assert.Equal<int>(0, context.CountdownEvent.CurrentCount);
@@ -602,8 +605,6 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
                 appBuilder.UseWebApi(config);
             }
         }
-
-        private const string LogTemplate = "Method: {0}, param1: '{1}', param2: '{2}', body: {3}";
 
         ///<remarks>Must be public </remarks>
         public class LogMeController : ApiController
@@ -651,6 +652,12 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
                 [DataMember(Name = "param2")]
                 [XmlElement("param2")]
                 public string Param2 { get; set; }
+                [DataMember(Name = "param3")]
+                [XmlElement("param3")]
+                public bool Param3 { get; set; }
+                [DataMember(Name = "param4")]
+                [XmlElement("param4")]
+                public DateTime Param4 { get; set; }
             }
 
             /// <summary>
@@ -776,11 +783,14 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
 
                 if (_testContext.XmlInsteadOfJson)
                 {
+                    // Default Xml Formatter uses DataContractSerializer, changing it to XmlSerializer
                     config.Formatters.XmlFormatter.UseXmlSerializer = true;
                 }
                 else
                 {
-                    config.Formatters.JsonFormatter.UseDataContractJsonSerializer = true;
+                    // Use ISO 8601 / RFC 3339 Date-Format (2012-07-27T18:51:45.53403Z), instead of Microsoft JSON date format ("\/Date(ticks)\/")
+                    config.Formatters.JsonFormatter.SerializerSettings.DateFormatHandling = Newtonsoft.Json.DateFormatHandling.IsoDateFormat;
+                    config.Formatters.JsonFormatter.UseDataContractJsonSerializer = false;  // JSON.NET serializer instead of the ancient DataContractJsonSerializer
                 }
 
                 appBuilder.UseWebApi(config);
@@ -851,8 +861,18 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
                 if (Context != null)
                 {
                     if (string.Equals(Context.ExpectedParam2, complexType.Param2, StringComparison.OrdinalIgnoreCase)
-                        && Context.ExpectedParam1 == complexType.Param1)
+                        && Context.ExpectedParam1 == complexType.Param1
+                        && Context.ExpectedParam3 == complexType.Param3
+                        && Context.ExpectedParam4.Date == complexType.Param4.Date)
                     {
+                        if (Context.ExpectedHeaders != null && Context.ExpectedHeaders.Count > 0)
+                        {
+                            foreach (var expectedHeader in Context.ExpectedHeaders)
+                            {
+                                if (base.Request.Headers.GetValues(expectedHeader.Key).First() != expectedHeader.Value)
+                                    return;
+                            }
+                        }
                         Context.CountdownEvent.Signal();
                     }
                 }
@@ -877,17 +897,26 @@ Morbi Nulla justo Aenean orci Vestibulum ullamcorper tincidunt mollis et hendrer
 
                 public bool XmlInsteadOfJson { get; } = false;
 
+                public Dictionary<string, string> ExpectedHeaders { get; }
+
                 public string ExpectedParam1 { get; }
 
                 public string ExpectedParam2 { get; }
 
-                public TestContext(int portOffset, int expectedMessages, bool xmlInsteadOfJson, string expected1, string expected2)
+                public bool ExpectedParam3 { get; }
+
+                public DateTime ExpectedParam4 { get; }
+
+                public TestContext(int portOffset, int expectedMessages, bool xmlInsteadOfJson, Dictionary<string,string> expectedHeaders, string expected1, string expected2, bool expected3, DateTime expected4)
                 {
                     CountdownEvent = new CountdownEvent(expectedMessages);
                     PortOffset = portOffset;
                     XmlInsteadOfJson = xmlInsteadOfJson;
+                    ExpectedHeaders = expectedHeaders;
                     ExpectedParam1 = expected1;
                     ExpectedParam2 = expected2;
+                    ExpectedParam3 = expected3;
+                    ExpectedParam4 = expected4;
                 }
             }
         }

@@ -33,9 +33,10 @@
 
 namespace NLog.Layouts
 {
-    using Config;
+    using System;
     using System.Collections.Generic;
     using System.Text;
+    using NLog.Config;
 
     /// <summary>
     /// A specialized layout that renders JSON-formatted events.
@@ -74,6 +75,18 @@ namespace NLog.Layouts
         public bool RenderEmptyObject { get; set; }
 
         /// <summary>
+        /// Gets or sets a value indicating whether to include contents of the <see cref="MappedDiagnosticsContext"/> dictionary.
+        /// </summary>
+        public bool IncludeMdc { get; set; }
+
+#if NET4_0 || NET4_5
+        /// <summary>
+        /// Gets or sets a value indicating whether to include contents of the <see cref="MappedDiagnosticsLogicalContext"/> dictionary.
+        /// </summary>
+        public bool IncludeMdlc { get; set; }
+#endif
+
+        /// <summary>
         /// Gets or sets the option to include all properties from the log events
         /// </summary>
         public bool IncludeAllProperties { get; set; }
@@ -86,6 +99,24 @@ namespace NLog.Layouts
 #else
         public ISet<string> ExcludeProperties { get; set; }
 #endif
+
+        /// <summary>
+        /// Initializes the layout.
+        /// </summary>
+        protected override void InitializeLayout()
+        {
+            base.InitializeLayout();
+            if (IncludeMdc)
+            {
+                base.ThreadAgnostic = false;
+            }
+#if NET4_0 || NET4_5
+            if (IncludeMdlc)
+            {
+                base.ThreadAgnostic = false;
+            }
+#endif
+        }
 
         /// <summary>
         /// Formats the log event as a JSON document for writing.
@@ -121,88 +152,96 @@ namespace NLog.Layouts
                 string text = attrib.LayoutWrapper.Render(logEvent);
                 if (!string.IsNullOrEmpty(text))
                 {
-                    bool first = sb.Length == 0;
-                    if (first)
-                    {
-                        sb.Append(SuppressSpaces ? "{" : "{ ");
-                    }
-                    AppendJsonAttributeValue(attrib, text, sb, first);
+                    AppendJsonAttributeValue(attrib.Name, attrib.Encode, text, sb);
                 }
             }
+
+            if (this.IncludeMdc)
+            {
+                foreach (string key in MappedDiagnosticsContext.GetNames())
+                {
+                    if (string.IsNullOrEmpty(key))
+                        continue;
+                    object propertyValue = MappedDiagnosticsContext.GetObject(key);
+                    AppendJsonPropertyValue(key, propertyValue, sb);
+                }
+            }
+
+#if NET4_0 || NET4_5
+            if (this.IncludeMdlc)
+            {
+                foreach (string key in MappedDiagnosticsLogicalContext.GetNames())
+                {
+                    if (string.IsNullOrEmpty(key))
+                        continue;
+                    object propertyValue = MappedDiagnosticsLogicalContext.GetObject(key);
+                    AppendJsonPropertyValue(key, propertyValue, sb);
+                }
+            }
+#endif
 
             if (this.IncludeAllProperties && logEvent.HasProperties)
             {
-                JsonAttribute dynAttrib = null;
                 foreach (var prop in logEvent.Properties)
                 {
                     //Determine property name
-                    string propName = prop.Key.ToString();
+                    string propName = Internal.XmlHelper.XmlConvertToString(prop.Key ?? string.Empty);
+                    if (string.IsNullOrEmpty(propName))
+                        continue;
 
                     //Skips properties in the ExcludeProperties list
-                    if (this.ExcludeProperties.Contains(propName)) continue;
+                    if (this.ExcludeProperties.Contains(propName))
+                        continue;
 
-                    if (dynAttrib == null)
-                        dynAttrib = new JsonAttribute();
-
-                    if (prop.Value == null)
-                    {
-                        dynAttrib.Name = propName;
-                        dynAttrib.Encode = false;    // Don't put quotes around null values
-                        dynAttrib.Layout = "null";
-                    }
-                    else
-                    {
-                        System.Type objType = prop.Value.GetType();
-                        System.TypeCode objTypeCode = System.Type.GetTypeCode(objType);
-                        if (objTypeCode == System.TypeCode.Boolean || IsNumeric(objType, objTypeCode))
-                        {
-                            dynAttrib.Name = propName;
-                            dynAttrib.Encode = false;    //Don't put quotes around numbers or boolean values
-                            dynAttrib.Layout = string.Concat("${event-properties:item=", propName, "}");
-                        }
-                        else
-                        {
-                            dynAttrib.Name = propName;
-                            dynAttrib.Encode = true;
-                            dynAttrib.Layout = string.Concat("${event-properties:item=", propName, "}");
-                        }
-                    }
-
-                    string text = dynAttrib.LayoutWrapper.Render(logEvent);
-                    if (!string.IsNullOrEmpty(text))
-                    {
-                        bool first = sb.Length == 0;
-                        if (first)
-                        {
-                            sb.Append(SuppressSpaces ? "{" : "{ ");
-                        }
-                        AppendJsonAttributeValue(dynAttrib, text, sb, first);
-                    }
+                    AppendJsonPropertyValue(propName, prop.Value, sb);
                 }
             }
 
+            CompleteJsonMessage(sb);
+        }
+
+        private void CompleteJsonMessage(StringBuilder sb)
+        {
             if (sb.Length > 0)
                 sb.Append(SuppressSpaces ? "}" : " }");
         }
 
-        private void AppendJsonAttributeValue(JsonAttribute attrib, string text, StringBuilder sb, bool first)
+        private void AppendJsonPropertyValue(string propName, object propertyValue, StringBuilder sb)
         {
+            TypeCode objTypeCode = Convert.GetTypeCode(propertyValue);
+
+            bool propStringEncode;
+            string propStringValue = Targets.DefaultJsonSerializer.JsonStringEncode(propertyValue, objTypeCode, true, out propStringEncode);
+            if (!string.IsNullOrEmpty(propStringValue))
+            {
+                AppendJsonAttributeValue(propName, propStringEncode, propStringValue, sb);
+            }
+        }
+
+        private void AppendJsonAttributeValue(string attributeName, bool attributeEncode, string text, StringBuilder sb)
+        {
+            bool first = sb.Length == 0;
+            if (first)
+            {
+                sb.Append(SuppressSpaces ? "{" : "{ ");
+            }
+
             if (!first)
             {
-                sb.EnsureCapacity(sb.Length + attrib.Name.Length + text.Length + 12);
+                sb.EnsureCapacity(sb.Length + attributeName.Length + text.Length + 12);
                 sb.Append(',');
                 if (!this.SuppressSpaces)
                     sb.Append(' ');
             }
 
             sb.Append('"');
-            sb.Append(attrib.Name);
+            sb.Append(attributeName);
             sb.Append('"');
             sb.Append(':');
             if (!this.SuppressSpaces)
                 sb.Append(' ');
 
-            if (attrib.Encode)
+            if (attributeEncode)
             {
                 // "\"{0}\":{1}\"{2}\""
                 sb.Append('"');
@@ -216,19 +255,6 @@ namespace NLog.Layouts
                 // "\"{0}\":{1}{2}"
                 sb.Append(text);
             }
-        }
-
-        private bool IsNumeric(System.Type objType, System.TypeCode typeCode)
-        {
-            if (objType.IsPrimitive && typeCode != System.TypeCode.Object)
-            {
-                return typeCode != System.TypeCode.Char && typeCode != System.TypeCode.Boolean;
-            }
-            else if (typeCode == System.TypeCode.Decimal)
-            {
-                return true;
-            }
-            return false;
         }
     }
 }

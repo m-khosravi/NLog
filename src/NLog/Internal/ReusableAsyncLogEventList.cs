@@ -40,50 +40,11 @@ namespace NLog.Internal
     /// <summary>
     /// Controls a single allocated AsyncLogEventInfo-List for reuse (only one active user)
     /// </summary>
-    internal class ReusableAsyncLogEventList
+    internal class ReusableAsyncLogEventList : ReusableObjectCreator<IList<AsyncLogEventInfo>>
     {
-        private IList<AsyncLogEventInfo> _list;
-
-        /// <summary>Empty handle when <see cref="Targets.Target.OptimizeBufferReuse"/> is disabled</summary>
-        public readonly LockList None = default(LockList);
-
         public ReusableAsyncLogEventList(int capacity)
+            :base(new List<AsyncLogEventInfo>(capacity), (l) => l.Clear())
         {
-            _list = new List<AsyncLogEventInfo>(capacity);
-        }
-
-        /// <summary>
-        /// Creates handle to the reusable AsyncLogEventInfo-List for active usage
-        /// </summary>
-        /// <returns>Handle to the reusable item, that can release it again</returns>
-        public LockList Allocate()
-        {
-            return new LockList(this);
-        }
-
-        public struct LockList : IDisposable
-        {
-            /// <summary>
-            /// Access the AsyncLogEventInfo[]-buffer acquired
-            /// </summary>
-            public readonly IList<AsyncLogEventInfo> Result;
-            private readonly ReusableAsyncLogEventList _owner;
-
-            public LockList(ReusableAsyncLogEventList owner)
-            {
-                Result = owner._list;
-                owner._list = null;
-                _owner = owner;
-            }
-
-            public void Dispose()
-            {
-                if (Result != null)
-                {
-                    Result.Clear();
-                    _owner._list = Result;
-                }
-            }
         }
     }
 }

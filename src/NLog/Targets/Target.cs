@@ -35,6 +35,7 @@ namespace NLog.Targets
 {
     using System;
     using System.Collections.Generic;
+    using System.Linq;
 
     using NLog.Common;
     using NLog.Config;
@@ -54,6 +55,11 @@ namespace NLog.Targets
         private bool allLayoutsAreThreadAgnostic;
         private bool scannedForLayouts;
         private Exception initializeException;
+
+        /// <summary>
+        /// The Max StackTraceUsage of all the <see cref="Layout"/> in this Target
+        /// </summary>
+        internal StackTraceUsage StackTraceUsage { get; private set; }
 
         /// <summary>
         /// Gets or sets the name of the target.
@@ -106,28 +112,20 @@ namespace NLog.Targets
         internal readonly ReusableBuilderCreator ReusableLayoutBuilder = new ReusableBuilderCreator();
 
         /// <summary>
-        /// Get all used layouts in this target.
-        /// </summary>
-        /// <returns></returns>
-        internal List<Layout> GetAllLayouts()
-        {
-            if (!scannedForLayouts)
-            {
-                lock (this.SyncRoot)
-                {
-                    FindAllLayouts();
-                }
-            }
-            return allLayouts;
-        }
-
-        /// <summary>
         /// Initializes this instance.
         /// </summary>
         /// <param name="configuration">The configuration.</param>
         void ISupportsInitialize.Initialize(LoggingConfiguration configuration)
         {
-            this.Initialize(configuration);
+            lock (this.SyncRoot)
+            { 
+                bool wasInitialized = this.isInitialized;
+                this.Initialize(configuration);
+                if (wasInitialized && configuration != null)
+                {
+                    FindAllLayouts();
+                }
+            }
         }
 
         /// <summary>
@@ -433,10 +431,13 @@ namespace NLog.Targets
         {
             if (disposing)
             {
-                if (this.isInitialized && this.initializeException == null)
+                if (this.isInitialized)
                 {
                     this.isInitialized = false;
-                    this.CloseTarget();
+                    if (this.initializeException == null)
+                    {
+                        this.CloseTarget();
+                    }
                 }
             }
         }
@@ -453,18 +454,10 @@ namespace NLog.Targets
 
         private void FindAllLayouts()
         {
-            this.allLayouts = new List<Layout>(ObjectGraphScanner.FindReachableObjects<Layout>(this));
+            this.allLayouts = ObjectGraphScanner.FindReachableObjects<Layout>(this);
             InternalLogger.Trace("{0} has {1} layouts", this, this.allLayouts.Count);
-            bool foundNotThreadAgnostic = false;
-            foreach (Layout layout in this.allLayouts)
-            {
-                if (!layout.IsThreadAgnostic)
-                {
-                    foundNotThreadAgnostic = true;
-                    break;
-                }
-            }
-            this.allLayoutsAreThreadAgnostic = !foundNotThreadAgnostic;
+            this.allLayoutsAreThreadAgnostic = allLayouts.All(layout => layout.ThreadAgnostic);
+            this.StackTraceUsage = allLayouts.DefaultIfEmpty().Max(layout => layout == null ? StackTraceUsage.None : layout.StackTraceUsage);
             this.scannedForLayouts = true;
         }
 
@@ -550,13 +543,14 @@ namespace NLog.Targets
         }
 
         /// <summary>
-        /// NOTE! Will soon be marked obsolete. Instead override Write(IList{AsyncLogEventInfo} logEvents)
+        /// NOTE! Obsolete, instead override Write(IList{AsyncLogEventInfo} logEvents)
         /// 
         /// Writes an array of logging events to the log target. By default it iterates on all
         /// events and passes them to "Write" method. Inheriting classes can use this method to
         /// optimize batch writes.
         /// </summary>
         /// <param name="logEvents">Logging events to be written out.</param>
+        [Obsolete("Instead override Write(IList<AsyncLogEventInfo> logEvents. Marked obsolete on NLog 4.5")]
         protected virtual void Write(AsyncLogEventInfo[] logEvents)
         {
             Write((IList<AsyncLogEventInfo>)logEvents);
@@ -577,11 +571,12 @@ namespace NLog.Targets
         }
 
         /// <summary>
-        /// NOTE! Will soon be marked obsolete. Instead override Write(IList{AsyncLogEventInfo} logEvents)
+        /// NOTE! Obsolete, instead override WriteAsyncThreadSafe(IList{AsyncLogEventInfo} logEvents)
         /// 
         /// Writes an array of logging events to the log target, in a thread safe manner.
         /// </summary>
         /// <param name="logEvents">Logging events to be written out.</param>
+        [Obsolete("Instead override WriteAsyncThreadSafe(IList<AsyncLogEventInfo> logEvents. Marked obsolete on NLog 4.5")]
         protected virtual void WriteAsyncThreadSafe(AsyncLogEventInfo[] logEvents)
         {
             WriteAsyncThreadSafe((IList<AsyncLogEventInfo>)logEvents);
